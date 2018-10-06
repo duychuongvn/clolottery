@@ -15,49 +15,91 @@ contract CloLotteryContract is Ownable {
     event CloseRoundEvent();
     event WinTicketEvent(uint32 indexed ticket);
     event NotEnoughFundToInitEvent();
-    enum State {Initializing, Open, Processing, Finished}
+    enum State {Initializing, Open, Processing, Closed}
 
-    //TODO will be change to uint32 once go line
-    mapping(uint32=> address[]) buyers;
-    State public state;
-    uint lastBuyBlock;
-    uint  public durationBlock = 8400;
-    uint pinBlock = 20; // ~300 seconds
-    uint256 public ticketPrice = 1000000000000000000; // 1 ether    uint256 public winningPrize; // in wei
-    uint256 public underLimitPrize = 2 ether;
-    uint256 public winningPrize;
-    uint8 public founderEarnPercent = 25;
-    uint32 public lastWinTicket;
-    uint closedBlock;
+    State public _state;
+    address public FOUNDER = 0x81029273484ed1167910dd38f7b73000d342f3cf;
+
+    mapping(uint32=> address[]) private buyerTicketNumbers;
+    bytes32 private _lastBuyBlockHash;  // the last block hash user buys the ticket before closing a round
+    uint  public roundDuration = 8400; // default 1 day
+    uint private spinBlock = 20; //   wait about 300 seconds before determining the winner
+    uint256 public ticketPrice = 1000000000000000000; // default 1 ether
+    uint256 public underLimitPrize = 2 ether; //  the minimum prize to initialize a round
+    uint256 public winningPrize; // total ether will be paid for the winners, the value will increase when more players buy tickets
+    uint8 public founderEarnPercent = 20; // the percentage the founder earn when finish a round
+    uint32 public lastWinTicketNumber;
+    uint256 closedBlockNumber; // the block number when closing a round, this is use to prevent user buys ticket at determining the winner time
     ScheduleContractInterface scheduledContract;
-    uint public roundId;
+    uint public _roundId;
     mapping(uint=>Round) rounds;
     function CloLotteryContract() {
       //  scheduledContract = ScheduleContractInterface(scheduleContractAddress);
     }
 
+    address[] winnerAddresses;
+    mapping(address=>uint) winners;
     struct Round {
         uint32 winNumber;
         uint256 winPrize;
         uint48 startTime;
         uint48 endTime;
+        uint256 boughtAmount;
         uint256 finishBlock;
-        mapping(uint32=> address[]) buyers;
+        uint256 ticketPrice;
+        mapping(uint32=> address[]) buyerTicketNumbers;
+    }
+
+    modifier isCbAddress() {
+        //require(msg.sender == scheduledContract.cbAddress);
+        _;
+    }
+
+    function getCurrentRoundInfo() public view returns(uint roundId,
+                                                uint256 ticketPrice,
+                                                uint256 startTime,
+                                                uint256 endTime,
+                                                State state,
+                                                uint256 currentPrize) {
+        roundId = _roundId;
+        (roundId, ticketPrice, startTime, endTime, state, currentPrize) =  getRoundInfo(roundId);
+    }
+
+    function getRoundInfo(uint _id) public view returns(uint roundId,
+        uint256 ticketPrice,
+        uint256 startTime,
+        uint256 endTime,
+        State state,
+        uint256 winPrize) {
+        roundId = _id;
+        ticketPrice = rounds[_roundId].ticketPrice;
+        startTime = uint256(rounds[_roundId].startTime);
+        endTime = uint256(rounds[_roundId].startTime + roundDuration);
+        state = _state;
+        if (_id == _roundId) {
+            winPrize = address(this).balance;
+        } else {
+            winPrize = rounds[_roundId].winPrize;
+        }
     }
 
     function nextRound() private returns(uint) {
-        return ++roundId;
+        return ++_roundId;
     }
+
     function init() public payable onlyOwner {
-        require(state == State.Initializing);
+        require(_state == State.Initializing || _state == State.Closed);
         require(msg.value + winningPrize >= underLimitPrize);
         winningPrize += msg.value;
         initNewRound();
     }
+
     function initNewRound() private {
-        state = State.Open;
+        _state = State.Open;
         rounds[nextRound()].startTime = uint48(now);
-        rounds[roundId].winPrize = winningPrize;
+        rounds[_roundId].winPrize = winningPrize;
+        rounds[_roundId].ticketPrice = ticketPrice;
+        //schedule();
         NewRoundOpenEvent();
     }
 
@@ -71,67 +113,84 @@ contract CloLotteryContract is Ownable {
 
     function buyTickets(uint32[] ticketNumbers) public payable {
 
-        require(state == State.Open);
+        require(_state == State.Open);
         require(ticketNumbers.length >= 1);
         require(ticketNumbers.length * ticketPrice == msg.value);
         for(uint i = 0; i < ticketNumbers.length; i++) {
-            rounds[roundId].buyers[ticketNumbers[i]].push(msg.sender);
+            rounds[_roundId].buyerTicketNumbers[ticketNumbers[i]].push(msg.sender);
         }
+        rounds[_roundId].boughtAmount += msg.value;
+        _lastBuyBlockHash = block.blockhash(block.number);
         BuyTicketEvent();
     }
 
     function schedule() {
-        if(state == State.Processing) {
+        if(_state == State.Processing) {
             uint256 gasFee = 400000;
-            scheduledContract.schedule(pinBlock*15, gasFee);
+            // schedule to determinate the winner
+            scheduledContract.schedule(spinBlock*15, gasFee);
         } else {
-            scheduledContract.schedule(durationBlock, gasFee);
+            // schedule to closed the round and prepare to determinate the winner
+            scheduledContract.schedule(roundDuration, gasFee);
         }
     }
 
     function finish() private {
-        lastBuyBlock = block.number;
-        lastWinTicket = random();
-        lastWinTicket = (lastWinTicket << 2) / 10000;
-        emit WinTicketEvent(lastWinTicket);
-        uint winnerCount = rounds[roundId].buyers[lastWinTicket].length;
-        uint256 totalPaid = this.balance - (this.balance * founderEarnPercent + 5) / 100;
-        rounds[roundId].winPrize = totalPaid;
-        rounds[roundId].finishBlock = block.number;
-        rounds[roundId].winNumber = lastWinTicket;
-        rounds[roundId].endTime = uint48(now);
+
+      //  lastWinTicketNumber = (random() << 2) / 10000; //  uncomment when goline, ticket number is from 0-999999
+        lastWinTicketNumber = (random() << 2) / 1000000000;// remove when go line, current ticket number is 0-9
+        uint winnerCount = rounds[_roundId].buyerTicketNumbers[lastWinTicketNumber].length;
+
+        rounds[_roundId].winPrize = address(this).balance;
+        rounds[_roundId].finishBlock = block.number;
+        rounds[_roundId].winNumber = lastWinTicketNumber;
+        rounds[_roundId].endTime = uint48(now);
         if (winnerCount > 0) {
+            uint256 totalPaid = address(this).balance - (address(this).balance * founderEarnPercent + 2) / 100; // need to pay for founder and keep 2 percent to run contract
+            uint founderEarns = address(this).balance * founderEarnPercent / 100;
             uint256 balanceToDistribute = totalPaid / winnerCount;
             for (uint i = 0; i < winnerCount; i++) {
-                rounds[roundId].buyers[lastWinTicket][i].transfer(balanceToDistribute);
+                rounds[_roundId].buyerTicketNumbers[lastWinTicketNumber][i].transfer(balanceToDistribute);
             }
-            owner.transfer(this.balance * founderEarnPercent / 100);
+            FOUNDER.transfer(founderEarns);
+            _state = State.Initializing;
+        } else {
+            initNewRound();
         }
-        state = State.Finished;
-        initNewRound();
+        emit WinTicketEvent(lastWinTicketNumber);
     }
 
     function random() private view returns (uint32) {
-        return uint32(uint256(keccak256(lastBuyBlock,
+        return uint32(uint256(keccak256(_lastBuyBlockHash,
                                 keccak256(block.blockhash(block.number),
                                     keccak256(block.timestamp, block.difficulty)))));
     }
 
-    event StateEvent(State state);
-    function __callback(bytes32 queryId) {
-        require(state == State.Open || state == State.Processing);
-         if(state == State.Open) {
-             state = State.Processing;
+    function __callback(bytes32 queryId) public isCbAddress {
+        require(_state == State.Open || _state == State.Processing);
+         if(_state == State.Open) {
+             _state = State.Processing;
             // schedule();
-             return;
          } else {
-           //  require(block.number > closedBlock+pinBlock);
+             require(block.number >= closedBlockNumber + spinBlock);
              finish();
          }
-        StateEvent(state);
+
+    }
+
+    function stopRound() public onlyOwner {
+        //  can stop  contract if no user buys ticket
+        require(rounds[_roundId].boughtAmount == 0);
+        require(_state == State.Open);
+        _state = State.Closed;
+        CloseRoundEvent();
+    }
 
 
-
+    function kill() public onlyOwner {
+        //  can destroy contract if no user buys ticket
+        require(_state == State.Initializing || _state == State.Closed);
+        selfdestruct(owner);
     }
 
 }
