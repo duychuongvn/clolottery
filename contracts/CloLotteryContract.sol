@@ -5,6 +5,7 @@ import "./Ownable.sol";
 contract ScheduleContractInterface {
     address public cbAddress;
     function schedule(uint timestamp, uint256 estimatedGas) payable returns (bytes32 _id);
+    function getPrice(uint _gaslimit) view returns(uint256 gasPrice);
 }
 
 contract CloLotteryContract is Ownable {
@@ -15,6 +16,7 @@ contract CloLotteryContract is Ownable {
     event CloseRoundEvent();
     event WinTicketEvent(uint32 indexed ticket);
     event NotEnoughFundToInitEvent();
+    event DeterminingScheduleEvent(bytes32 queryId, uint delay, uint gasLimit);
     enum State {Initializing, Open, Processing, Closed}
 
     State public _state;
@@ -22,8 +24,9 @@ contract CloLotteryContract is Ownable {
 
     mapping(uint32=> address[]) private buyerTicketNumbers;
     bytes32 private _lastBuyBlockHash;  // the last block hash user buys the ticket before closing a round
-    uint  public roundDuration = 8400; // default 1 day
-    uint private spinBlock = 20; //   wait about 300 seconds before determining the winner
+    uint  public roundDuration = 600; // default 1 day (will change to 8400)
+    uint private timeToDeterminingWinner = 60; // (will change to 300)  wait about 300 seconds before determining the winner
+    uint public roundOpenDuration = roundDuration - timeToDeterminingWinner;
     uint256 public ticketPrice = 1000000000000000000; // default 1 ether
     uint256 public underLimitPrize = 2 ether; //  the minimum prize to initialize a round
     uint256 public winningPrize; // total ether will be paid for the winners, the value will increase when more players buy tickets
@@ -33,8 +36,8 @@ contract CloLotteryContract is Ownable {
     ScheduleContractInterface scheduledContract;
     uint public _roundId;
     mapping(uint=>Round) rounds;
-    function CloLotteryContract() {
-      //  scheduledContract = ScheduleContractInterface(scheduleContractAddress);
+    function CloLotteryContract(address scheduleAddr) {
+       scheduledContract = ScheduleContractInterface(scheduleAddr);
     }
 
     address[] winnerAddresses;
@@ -99,7 +102,7 @@ contract CloLotteryContract is Ownable {
         rounds[nextRound()].startTime = uint48(now);
         rounds[_roundId].winPrize = winningPrize;
         rounds[_roundId].ticketPrice = ticketPrice;
-        //schedule();
+        schedule();
         NewRoundOpenEvent();
     }
 
@@ -125,14 +128,22 @@ contract CloLotteryContract is Ownable {
     }
 
     function schedule() {
+
         if(_state == State.Processing) {
-            uint256 gasFee = 400000;
             // schedule to determinate the winner
-            scheduledContract.schedule(spinBlock*15, gasFee);
+            uint delay = timeToDeterminingWinner;
+            uint gasLimit = 100000;
+            uint price = scheduledContract.getPrice(gasLimit);
+
         } else {
             // schedule to closed the round and prepare to determinate the winner
-            scheduledContract.schedule(roundDuration, gasFee);
+            delay = roundOpenDuration;
+            gasLimit = 500000;
+            price = scheduledContract.getPrice(gasLimit);
+
         }
+        bytes32 id = scheduledContract.schedule.value(price)(delay, gasLimit);
+        DeterminingScheduleEvent(id, delay, gasLimit);
     }
 
     function finish() private {
@@ -170,9 +181,9 @@ contract CloLotteryContract is Ownable {
         require(_state == State.Open || _state == State.Processing);
          if(_state == State.Open) {
              _state = State.Processing;
-            // schedule();
+             schedule();
          } else {
-             require(block.number >= closedBlockNumber + spinBlock);
+             require(block.number >= closedBlockNumber + timeToDeterminingWinner/15);
              finish();
          }
 
