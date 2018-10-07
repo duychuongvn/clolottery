@@ -38,11 +38,11 @@ contract ScheduleContract is Ownable {
 
     event ScheduledEvent(address indexed target, bytes32  indexed queryId, uint indexed timestamp, uint gasLimit);
     uint gasprice = 20000000000;
-    address public cbAddress = 0x911eac91a26019f968bbba2a7b7aaa9afa12ab3d;
+    address public cbAddress = 0x5aeda56215b167893e80b4fe645ba6d5bab767de;
     bytes32[] dsources;
     mapping (address => uint) reqc;
 
-    function ScheduleContract(){
+    function ScheduleContract() {
 
     }
     modifier costs(uint gaslimit) {

@@ -16,6 +16,8 @@ contract CloLotteryContract is Ownable {
     event CloseRoundEvent();
     event WinTicketEvent(uint32 indexed ticket);
     event NotEnoughFundToInitEvent();
+    event FoundWinnerEvent(uint256 roundId, uint256 prize);
+    event NotFoundWinnerEvent(uint256 roundId);
     event DeterminingScheduleEvent(bytes32 queryId, uint delay, uint gasLimit);
     enum State {Initializing, Open, Processing, Closed}
 
@@ -31,6 +33,7 @@ contract CloLotteryContract is Ownable {
     uint256 public underLimitPrize = 2 ether; //  the minimum prize to initialize a round
     uint256 public winningPrize; // total ether will be paid for the winners, the value will increase when more players buy tickets
     uint8 public founderEarnPercent = 20; // the percentage the founder earn when finish a round
+    uint public applicationFeePecent = 2;
     uint32 public lastWinTicketNumber;
     uint256 closedBlockNumber; // the block number when closing a round, this is use to prevent user buys ticket at determining the winner time
     ScheduleContractInterface scheduledContract;
@@ -42,6 +45,7 @@ contract CloLotteryContract is Ownable {
 
     address[] winnerAddresses;
     mapping(address=>uint) winners;
+
     struct Round {
         uint32 winNumber;
         uint256 winPrize;
@@ -75,14 +79,14 @@ contract CloLotteryContract is Ownable {
         State state,
         uint256 winPrize) {
         roundId = _id;
-        ticketPrice = rounds[_roundId].ticketPrice;
-        startTime = uint256(rounds[_roundId].startTime);
-        endTime = uint256(rounds[_roundId].startTime + roundDuration);
+        ticketPrice = rounds[_id].ticketPrice;
+        startTime = uint256(rounds[_id].startTime);
+        endTime = uint256(rounds[_id].startTime + roundDuration);
         state = _state;
         if (_id == _roundId) {
             winPrize = address(this).balance;
         } else {
-            winPrize = rounds[_roundId].winPrize;
+            winPrize = rounds[_id].winPrize;
         }
     }
 
@@ -102,6 +106,7 @@ contract CloLotteryContract is Ownable {
         rounds[nextRound()].startTime = uint48(now);
         rounds[_roundId].winPrize = winningPrize;
         rounds[_roundId].ticketPrice = ticketPrice;
+        rounds[_roundId].endTime = uint48(now + roundOpenDuration);
         schedule();
         NewRoundOpenEvent();
     }
@@ -157,7 +162,7 @@ contract CloLotteryContract is Ownable {
         rounds[_roundId].winNumber = lastWinTicketNumber;
         rounds[_roundId].endTime = uint48(now);
         if (winnerCount > 0) {
-            uint256 totalPaid = address(this).balance - (address(this).balance * founderEarnPercent + 2) / 100; // need to pay for founder and keep 2 percent to run contract
+            uint256 totalPaid = address(this).balance - (address(this).balance * (founderEarnPercent + applicationFeePecent)) / 100; // need to pay for founder and keep 2 percent to run contract
             uint founderEarns = address(this).balance * founderEarnPercent / 100;
             uint256 balanceToDistribute = totalPaid / winnerCount;
             for (uint i = 0; i < winnerCount; i++) {
@@ -165,10 +170,11 @@ contract CloLotteryContract is Ownable {
             }
             FOUNDER.transfer(founderEarns);
             _state = State.Initializing;
+            FoundWinnerEvent(_roundId, address(this).balance );
         } else {
             initNewRound();
+            NotFoundWinnerEvent(_roundId);
         }
-        emit WinTicketEvent(lastWinTicketNumber);
     }
 
     function random() private view returns (uint32) {
