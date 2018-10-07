@@ -19,8 +19,10 @@ contract CloLotteryContract is Ownable {
     event FoundWinnerEvent(uint256 roundId, uint256 prize);
     event NotFoundWinnerEvent(uint256 roundId);
     event DeterminingScheduleEvent(bytes32 queryId, uint delay, uint gasLimit);
-    enum State {Initializing, Open, Processing, Closed}
+    enum State {Initializing, Open, Processing, Closed, Finished}
 
+    uint GAS_LIMIT_DETERMINATION_WINNER = 500000;
+    uint GAS_LIMIT_ROUND_CLOSE = 100000;
     State public _state;
     address public FOUNDER = 0x81029273484ed1167910dd38f7b73000d342f3cf;
 
@@ -30,36 +32,50 @@ contract CloLotteryContract is Ownable {
     uint private timeToDeterminingWinner = 60; // (will change to 300)  wait about 300 seconds before determining the winner
     uint public roundOpenDuration = roundDuration - timeToDeterminingWinner;
     uint256 public ticketPrice = 1000000000000000000; // default 1 ether
-    uint256 public underLimitPrize = 2 ether; //  the minimum prize to initialize a round
+    uint256 public underLimitPrize = 2 ether; //  the minimum prize to init a round
     uint256 public winningPrize; // total ether will be paid for the winners, the value will increase when more players buy tickets
-    uint8 public founderEarnPercent = 20; // the percentage the founder earn when finish a round
-    uint public applicationFeePecent = 2;
+    uint8 public founderEarnPercent = 20; // the percentage the founder earns when finish a round
+    uint8 public applicationFeePecent = 2;
     uint32 public lastWinTicketNumber;
     uint256 closedBlockNumber; // the block number when closing a round, this is use to prevent user buys ticket at determining the winner time
+    uint256 openBlockNumber;
+    uint48 public _roundId;
+    uint maxLoopPerRound; // use this value to estimate gas when determinate winners
+    uint48 private reportedRoundId;
     ScheduleContractInterface scheduledContract;
-    uint public _roundId;
+
     mapping(uint=>Round) rounds;
+    address[] winnerAddresses;
+    mapping(address=>uint) winnerRecords;
+
     function CloLotteryContract(address scheduleAddr) {
        scheduledContract = ScheduleContractInterface(scheduleAddr);
     }
 
-    address[] winnerAddresses;
-    mapping(address=>uint) winners;
-
     struct Round {
         uint32 winNumber;
-        uint256 winPrize;
         uint48 startTime;
         uint48 endTime;
+        uint256 winPrize;
         uint256 boughtAmount;
+        uint256 totalPaid;
         uint256 finishBlock;
         uint256 ticketPrice;
         mapping(uint32=> address[]) buyerTicketNumbers;
     }
 
     modifier isCbAddress() {
-        //require(msg.sender == scheduledContract.cbAddress);
+        require( msg.sender == owner || msg.sender == scheduledContract.cbAddress());
+
         _;
+    }
+
+    function getWinners() public view returns(address[], uint256[] ) {
+        uint256[] memory winnerAmounts = new uint256[](winnerAddresses.length);
+        for(uint i= 0; i < winnerAddresses.length; i++) {
+          winnerAmounts[i] = winnerRecords[winnerAddresses[i]];
+        }
+        return (winnerAddresses, winnerAmounts);
     }
 
     function getCurrentRoundInfo() public view returns(uint roundId,
@@ -69,7 +85,8 @@ contract CloLotteryContract is Ownable {
                                                 State state,
                                                 uint256 currentPrize) {
         roundId = _roundId;
-        (roundId, ticketPrice, startTime, endTime, state, currentPrize) =  getRoundInfo(roundId);
+        uint32 ticketNumber;
+        (roundId, ticketPrice, startTime, endTime, state, currentPrize, ticketNumber) =  getRoundInfo(roundId);
     }
 
     function getRoundInfo(uint _id) public view returns(uint roundId,
@@ -77,17 +94,24 @@ contract CloLotteryContract is Ownable {
         uint256 startTime,
         uint256 endTime,
         State state,
-        uint256 winPrize) {
+        uint256 winPrize,
+        uint32 ticketNumber) {
         roundId = _id;
         ticketPrice = rounds[_id].ticketPrice;
         startTime = uint256(rounds[_id].startTime);
         endTime = uint256(rounds[_id].startTime + roundDuration);
         state = _state;
-        if (_id == _roundId) {
+        if (_id == _roundId && _state != State.Finished ) {
             winPrize = address(this).balance;
         } else {
             winPrize = rounds[_id].winPrize;
+            ticketNumber = rounds[_id].winNumber;
         }
+    }
+
+    function changeFounder(address newFounder) onlyOwner {
+        require(newFounder != 0x0);
+        FOUNDER = newFounder;
     }
 
     function nextRound() private returns(uint) {
@@ -95,7 +119,7 @@ contract CloLotteryContract is Ownable {
     }
 
     function init() public payable onlyOwner {
-        require(_state == State.Initializing || _state == State.Closed);
+        require(_state == State.Initializing || _state == State.Closed || _state == State.Finished);
         require(msg.value + winningPrize >= underLimitPrize);
         winningPrize += msg.value;
         initNewRound();
@@ -107,29 +131,61 @@ contract CloLotteryContract is Ownable {
         rounds[_roundId].winPrize = winningPrize;
         rounds[_roundId].ticketPrice = ticketPrice;
         rounds[_roundId].endTime = uint48(now + roundOpenDuration);
+        openBlockNumber = block.number;
+        maxLoopPerRound = 0;
         schedule();
-        NewRoundOpenEvent();
+        emit NewRoundOpenEvent();
     }
 
-    function withdrawFee() onlyOwner {
+    function withdrawFee() public  onlyOwner {
         require(winningPrize > underLimitPrize);
         uint256 fee = (winningPrize-underLimitPrize) * founderEarnPercent / 100;
         winningPrize -= fee;
         msg.sender.transfer(fee);
     }
 
+    function updateReport() public onlyOwner returns(bool) {
+        require(_roundId > 0);
+        uint48 lastFinishedRound = _roundId - 1;
+        if(_state == State.Finished) {
+            lastFinishedRound = _roundId;
+        }
+        for(uint48 i = reportedRoundId; i <= lastFinishedRound; i++) {
+          address[] memory roundWinners = rounds[i].buyerTicketNumbers[rounds[i].winNumber];
+            if(roundWinners.length > 0) {
+              for(uint j = 0; j < roundWinners.length; j++) {
+                  if(winnerRecords[roundWinners[j]] == 0) {
+                      winnerAddresses.push(roundWinners[j]);
+                  }
+                  winnerRecords[roundWinners[j]] += rounds[i].totalPaid / roundWinners.length;
+              }
+            }
 
-    function buyTickets(uint32[] ticketNumbers) public payable {
+        }
+        reportedRoundId = lastFinishedRound; //
+        return true;
+    }
+
+    /**
+
+     * Method signature: 0xe1059fe5
+     * Length of each ticket must be less than or equals 6
+    **/
+   function buyTickets(uint32[] ticketNumbers) public payable {
 
         require(_state == State.Open);
         require(ticketNumbers.length >= 1);
         require(ticketNumbers.length * ticketPrice == msg.value);
         for(uint i = 0; i < ticketNumbers.length; i++) {
-            rounds[_roundId].buyerTicketNumbers[ticketNumbers[i]].push(msg.sender);
+            require(ticketNumbers[i] <= 999999);
+            uint index= rounds[_roundId].buyerTicketNumbers[ticketNumbers[i]].push(msg.sender);
+            if(index> maxLoopPerRound) {
+               maxLoopPerRound = index;
+            }
         }
         rounds[_roundId].boughtAmount += msg.value;
         _lastBuyBlockHash = block.blockhash(block.number);
-        BuyTicketEvent();
+        emit BuyTicketEvent();
     }
 
     function schedule() {
@@ -137,18 +193,15 @@ contract CloLotteryContract is Ownable {
         if(_state == State.Processing) {
             // schedule to determinate the winner
             uint delay = timeToDeterminingWinner;
-            uint gasLimit = 100000;
-            uint price = scheduledContract.getPrice(gasLimit);
-
+            uint gasLimit = GAS_LIMIT_DETERMINATION_WINNER;
         } else {
             // schedule to closed the round and prepare to determinate the winner
             delay = roundOpenDuration;
-            gasLimit = 500000;
-            price = scheduledContract.getPrice(gasLimit);
-
+            gasLimit = GAS_LIMIT_ROUND_CLOSE;
         }
+        uint price = scheduledContract.getPrice(gasLimit);
         bytes32 id = scheduledContract.schedule.value(price)(delay, gasLimit);
-        DeterminingScheduleEvent(id, delay, gasLimit);
+        emit DeterminingScheduleEvent(id, delay, gasLimit);
     }
 
     function finish() private {
@@ -168,17 +221,19 @@ contract CloLotteryContract is Ownable {
             for (uint i = 0; i < winnerCount; i++) {
                 rounds[_roundId].buyerTicketNumbers[lastWinTicketNumber][i].transfer(balanceToDistribute);
             }
+            rounds[_roundId].totalPaid = totalPaid;
             FOUNDER.transfer(founderEarns);
-            _state = State.Initializing;
-            FoundWinnerEvent(_roundId, address(this).balance );
+            _state = State.Finished;
+            emit FoundWinnerEvent(_roundId, address(this).balance );
         } else {
             initNewRound();
-            NotFoundWinnerEvent(_roundId);
+            emit NotFoundWinnerEvent(_roundId);
         }
     }
 
     function random() private view returns (uint32) {
-        return uint32(uint256(keccak256(_lastBuyBlockHash,
+        return uint32(keccak256(block.blockhash(closedBlockNumber),
+                          keccak256(_lastBuyBlockHash,
                                 keccak256(block.blockhash(block.number),
                                     keccak256(block.timestamp, block.difficulty)))));
     }
@@ -186,21 +241,26 @@ contract CloLotteryContract is Ownable {
     function __callback(bytes32 queryId) public isCbAddress {
         require(_state == State.Open || _state == State.Processing);
          if(_state == State.Open) {
+             require(block.number >= openBlockNumber + roundOpenDuration / 15);
              _state = State.Processing;
+             closedBlockNumber = block.number;
              schedule();
          } else {
-             require(block.number >= closedBlockNumber + timeToDeterminingWinner/15);
+             require(block.number >= closedBlockNumber + timeToDeterminingWinner / 15);
              finish();
          }
 
     }
 
+    /**
+     * Method signature: 0x55b895eb
+    **/
     function stopRound() public onlyOwner {
         //  can stop  contract if no user buys ticket
         require(rounds[_roundId].boughtAmount == 0);
         require(_state == State.Open);
         _state = State.Closed;
-        CloseRoundEvent();
+        emit CloseRoundEvent();
     }
 
 
