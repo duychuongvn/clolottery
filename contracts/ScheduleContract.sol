@@ -49,7 +49,7 @@ contract ScheduleContract is Ownable {
         uint price = gasprice * gaslimit;
         if (msg.value >= price){
             uint diff = msg.value - price;
-            if (diff > 0) msg.sender.send(diff);
+            if (diff > 0) msg.sender.transfer(diff);
             _;
         } else throw;
     }
@@ -79,4 +79,5 @@ contract ScheduleContract is Ownable {
         reqc[msg.sender]++;
         ScheduledEvent(msg.sender, _id, _timestamp, _gaslimit);
     }
+
 }

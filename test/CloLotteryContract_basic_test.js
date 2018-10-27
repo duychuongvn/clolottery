@@ -1,4 +1,5 @@
 const CloLotteryContract = artifacts.require("CloLotteryContract");
+const ScheduleContract = artifacts.require("ScheduleContract");
 
 toGwei = (wei) => {
   return parseInt(wei / 1000000000000);
@@ -36,31 +37,60 @@ describe('Test', async () => {
     const feeOwner = contractOwner;
 
     let contract;
+      let sContract;
 
-
-    beforeEach('setup contract for each test', async () => {
-      contract = await CloLotteryContract.new();
+      beforeEach('setup contract for each test', async () => {
+      sContract = await ScheduleContract.new();
+      contract = await CloLotteryContract.new(sContract.address);
       contract.WinTicketEvent().watch((err, res)=>{
           console.log("Ticket number: "+res.args.ticket.toNumber())
+
       }) ;
-      contract.StateEvent().watch((err, res)=>{
-          console.log("State:"+res.args.state.toNumber())
+          contract.LogRandomEvent().watch((err, res)=>{
+              console.log("Ticket number: "+res.args.amount.toNumber())
+
+          }) ;
+
+      contract.FoundWinnerEvent().watch(async (err, res)=> {
+          console.log("Found winner, transfer fund")
+          try {
+              await contract.transferToWinners();
+              console.log("===Balance after transfer fund for winners ====")
+              console.log("A1: "+await toEther(web3.eth.getBalance(accounts[1]).toNumber()))
+              console.log("A2: "+await toEther(web3.eth.getBalance(accounts[2]).toNumber()))
+              console.log("A3: "+await toEther(web3.eth.getBalance(accounts[3]).toNumber()))
+              console.log("A4: "+await toEther(web3.eth.getBalance(accounts[4]).toNumber()))
+              console.log("A5: "+await toEther(web3.eth.getBalance(accounts[5]).toNumber()))
+              console.log("A6: "+await toEther(web3.eth.getBalance(accounts[6]).toNumber()))
+              console.log("A7: "+await toEther(web3.eth.getBalance(accounts[7]).toNumber()))
+
+          }catch (e) {
+              console.log('Cannot transfer funds', e);
+          }
       })
     })
 
 
     it('should query', async () => {
+        console.log("===Balance before buying ticket====")
+        console.log("A1: "+await toEther(web3.eth.getBalance(accounts[1]).toNumber()))
+        console.log("A2: "+await toEther(web3.eth.getBalance(accounts[2]).toNumber()))
+        console.log("A3: "+await toEther(web3.eth.getBalance(accounts[3]).toNumber()))
+        console.log("A4: "+await toEther(web3.eth.getBalance(accounts[4]).toNumber()))
+        console.log("A5: "+await toEther(web3.eth.getBalance(accounts[5]).toNumber()))
+        console.log("A6: "+await toEther(web3.eth.getBalance(accounts[6]).toNumber()))
+        console.log("A7: "+await toEther(web3.eth.getBalance(accounts[7]).toNumber()))
         contract.init({from:contractOwner, value:toWei(4)});
-        contract.buyTickets([8,10,100], {from:accounts[1], value: toWei(3)})
-        contract.buyTickets([92,93,94], {from:accounts[1], value: toWei(3)})
-        contract.buyTickets([92,91,22], {from:accounts[2], value: toWei(3)})
-        contract.buyTickets([9,50,51], {from:accounts[3], value: toWei(3)})
-        contract.buyTickets([125,220,62], {from:accounts[4], value: toWei(3)})
-        contract.buyTickets([54,53,52], {from:accounts[5], value: toWei(3)})
-        contract.buyTickets([55,56,57], {from:accounts[6], value: toWei(3)})
-        contract.buyTickets([120,123,101], {from:accounts[7], value: toWei(3)})
+        contract.buyTickets([8,9,7], {from:accounts[1], value: toWei(3)})
+        contract.buyTickets([8,7], {from:accounts[1], value: toWei(3)})
+        contract.buyTickets([6,2], {from:accounts[2], value: toWei(3)})
+        contract.buyTickets([8,1], {from:accounts[3], value: toWei(3)})
+        contract.buyTickets([6], {from:accounts[4], value: toWei(3)})
+        contract.buyTickets([7,2], {from:accounts[5], value: toWei(3)})
+        contract.buyTickets([2], {from:accounts[6], value: toWei(3)})
+        contract.buyTickets([2,6, 0], {from:accounts[7], value: toWei(3)})
 
-        console.log(contract.address)
+        console.log("===Balance after buying ticket====")
         console.log(await toEther(web3.eth.getBalance(contract.address).toNumber()))
         console.log(await toEther(web3.eth.getBalance(contractOwner).toNumber()))
         console.log("A1: "+await toEther(web3.eth.getBalance(accounts[1]).toNumber()))
@@ -71,16 +101,23 @@ describe('Test', async () => {
         console.log("A6: "+await toEther(web3.eth.getBalance(accounts[6]).toNumber()))
         console.log("A7: "+await toEther(web3.eth.getBalance(accounts[7]).toNumber()))
 
-        contract.__callback(0x0);
-        await sleep();
-        contract.__callback(0x1);
-        console.log("A1: "+await toEther(web3.eth.getBalance(accounts[1]).toNumber()))
-        console.log("A2: "+await toEther(web3.eth.getBalance(accounts[2]).toNumber()))
-        console.log("A3: "+await toEther(web3.eth.getBalance(accounts[3]).toNumber()))
-        console.log("A4: "+await toEther(web3.eth.getBalance(accounts[4]).toNumber()))
-        console.log("A5: "+await toEther(web3.eth.getBalance(accounts[5]).toNumber()))
-        console.log("A6: "+await toEther(web3.eth.getBalance(accounts[6]).toNumber()))
-        console.log("A7: "+await toEther(web3.eth.getBalance(accounts[7]).toNumber()))
+
+        // .then(function(e, e1){
+        //     console.log(e, e1)
+        // });
+        for(var i = 0; i < 50;i++) {
+            try{
+                await contract.__callback('0x01', {from: contractOwner});
+                console.log('callback success at', i);
+            } catch (e) {
+                // ignore error when callback not reach required blocks
+            }
+        }
+
+
+        // contract.transferToWinners().then((err, result)=>{
+        //     console.log(err, result);
+        // });
 
     });
   })
