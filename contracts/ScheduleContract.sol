@@ -38,7 +38,7 @@ contract ScheduleContract is Ownable {
 
     event ScheduledEvent(address indexed target, bytes32  indexed queryId, uint indexed timestamp, uint gasLimit);
     uint gasprice = 20000000000;
-    address public cbAddress = 0x5aeda56215b167893e80b4fe645ba6d5bab767de;
+    address public cbAddress = 0x911EAc91a26019F968bBBA2a7b7aaa9aFa12aB3d;
     bytes32[] dsources;
     mapping (address => uint) reqc;
 

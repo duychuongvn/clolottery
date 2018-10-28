@@ -9,9 +9,9 @@ contract ScheduleContractInterface {
     function getPrice(uint _gaslimit) view returns(uint256 gasPrice);
 }
 
-contract CloLotteryContract is Ownable {
-    uint GAS_LIMIT_DETERMINATION_WINNER = 500000;
-    uint GAS_LIMIT_ROUND_CLOSE = 100000;
+contract EtherLotteryContract is Ownable {
+    uint GAS_LIMIT_DETERMINATION_WINNER = 100000;
+    uint GAS_LIMIT_ROUND_CLOSE = 80000;
     uint public MAX_TICKET_NUMER = 999999;
     address public FOUNDER = 0x81029273484ed1167910dd38f7b73000d342f3cf;
 
@@ -52,7 +52,7 @@ contract CloLotteryContract is Ownable {
     address[] winnerAddresses;
     mapping(address=>uint) winnerRecords;
 
-    function CloLotteryContract(address scheduleAddr) {
+    function EtherLotteryContract(address scheduleAddr) {
        scheduledContract = ScheduleContractInterface(scheduleAddr);
     }
 
@@ -71,7 +71,7 @@ contract CloLotteryContract is Ownable {
     }
 
     modifier isCbAddress() {
-       // require( msg.sender == owner || msg.sender == scheduledContract.cbAddress());
+        require( msg.sender == owner || msg.sender == scheduledContract.cbAddress());
         _;
     }
 
